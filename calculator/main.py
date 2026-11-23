@@ -1,9 +1,20 @@
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi import FastAPI
 from pydantic import BaseModel
 import ast
 import operator
 
 app = FastAPI()
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[
+        "https://mayques.com",
+        "https://www.mayques.com"
+    ],
+    allow_methods=["POST"],
+    allow_headers=["Content-Type"],
+)
 
 operations = {
     ast.Add: operator.add,
