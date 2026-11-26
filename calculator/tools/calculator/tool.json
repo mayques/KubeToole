@@ -1,0 +1,11 @@
+{
+  "name": "Calculator",
+  "description": "Arithmetic with addition, subtraction, multiplication, division and parentheses.",
+  "execution": "inline",
+  "inputs": {
+    "type": "object",
+    "properties": {"expression": {"type": "string", "title": "Expression", "minLength": 1, "maxLength": 1024}},
+    "required": ["expression"],
+    "additionalProperties": false
+  }
+}

@@ -1,0 +1,28 @@
+# Only the API mounts persistent storage; worker writes use its authenticated storage API.
+# The declared capacity is NOT a filesystem quota. Do not use /mnt/data/postgresql here.
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: kubetoole-api-data
+spec:
+  capacity: {storage: 200G}
+  accessModes: [ReadWriteOnce]
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: ""
+  local: {path: /mnt/data/kubetoole}
+  nodeAffinity:
+    required:
+      nodeSelectorTerms:
+        - matchExpressions:
+            - key: kubernetes.io/hostname
+              operator: In
+              values: [ov-1f810b]
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata: {name: kubetoole-data, namespace: default}
+spec:
+  accessModes: [ReadWriteOnce]
+  storageClassName: ""
+  volumeName: kubetoole-api-data
+  resources: {requests: {storage: 200G}}

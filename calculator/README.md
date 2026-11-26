@@ -1,20 +1,5 @@
-# Calculator
+# Application image
 
-Minimal FastAPI calculator accepting arithmetic expressions as strings.
+This directory contains the API, the common worker runner and bundled tools. The calculator remains a lightweight authenticated tool; heavy tools run in separate, limited Kubernetes Jobs.
 
-## Run locally
-
-```bash
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
-uvicorn main:app --host 127.0.0.1 --port 8000
-```
-
-## Test
-
-```bash
-curl -X POST http://127.0.0.1:8000/calculate -H 'Content-Type: application/json' -d '{"expression":"12+4*3"}'
-```
-
-Expected response: `{"result":24}`.
+See the [project README](../README.md) for limits, local tests and endpoint contracts, the [tool contract](tools/README.md) for adding executable code, and the [deployment guide](../k8s/README.md) for required owner, image and storage configuration. A bare `uvicorn main:app` without PostgreSQL, `OWNER_SUBJECT` and an existing `DATA_ROOT` is intentionally not a configured server.

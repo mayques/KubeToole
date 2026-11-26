@@ -1,0 +1,47 @@
+# Strategic merge patch for the EXISTING calculator Deployment, not a replacement manifest.
+# Render the owner ID and identical immutable API/worker image digest before applying.
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+    rollingUpdate: null
+  template:
+    spec:
+      serviceAccountName: kubetoole-api
+      terminationGracePeriodSeconds: 30
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        seccompProfile: {type: RuntimeDefault}
+      containers:
+        - name: calculator
+          image: REPLACE_IMAGE_DIGEST
+          imagePullPolicy: IfNotPresent
+          envFrom:
+            - secretRef: {name: postgres-secret}
+          env:
+            - {name: OWNER_SUBJECT, value: REPLACE_OWNER_SUBJECT}
+            - {name: DATA_ROOT, value: /data}
+            - {name: WORKER_IMAGE, value: REPLACE_IMAGE_DIGEST}
+            - {name: COMPUTE_ENABLED, value: "true"}
+          resources:
+            requests: {cpu: 250m, memory: 256Mi}
+            limits: {cpu: 500m, memory: 512Mi}
+          securityContext:
+            readOnlyRootFilesystem: true
+            allowPrivilegeEscalation: false
+            capabilities: {drop: [ALL]}
+          volumeMounts:
+            - {name: kubetoole-data, mountPath: /data}
+          readinessProbe:
+            httpGet: {path: /health, port: 8000}
+            periodSeconds: 10
+            timeoutSeconds: 3
+          startupProbe:
+            httpGet: {path: /health, port: 8000}
+            failureThreshold: 30
+            periodSeconds: 5
+      volumes:
+        - name: kubetoole-data
+          persistentVolumeClaim: {claimName: kubetoole-data}

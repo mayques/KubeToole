@@ -2,3 +2,5 @@ fastapi>=0.115,<1
 uvicorn>=0.30,<1
 PyJWT[crypto]>=2.10,<3
 psycopg[binary]>=3.2,<4
+kubernetes>=31,<38
+jsonschema>=4.23,<5
