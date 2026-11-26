@@ -1,0 +1,11 @@
+{
+  "name": "CSV validation",
+  "description": "Check an uploaded CSV before making it available.",
+  "execution": "job",
+  "internal": true,
+  "inputs": {
+    "type": "object", "additionalProperties": false,
+    "required": ["upload_id"],
+    "properties": {"upload_id": {"type": "string", "pattern": "^[a-f0-9-]{36}$"}}
+  }
+}

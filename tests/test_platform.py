@@ -36,7 +36,7 @@ def test_migration_preserves_history(blank):
     with database.connection() as conn:
         assert conn.execute('SELECT result FROM calculations').fetchone()['result'] == 4
         assert conn.execute('SELECT used_bytes FROM accounts').fetchone()['used_bytes'] == 11
-        assert conn.execute('SELECT count(*) AS n FROM schema_migrations').fetchone()['n'] == 1
+        assert conn.execute('SELECT count(*) AS n FROM schema_migrations').fetchone()['n'] == 2
 
 
 def test_calculator_contract_isolation_and_usage(api):
@@ -149,7 +149,7 @@ def test_timeout_keeps_slot_until_stop(api):
 
 
 def create_file(api, job_id, headers, kind='output'):
-    response = api[0].post(f'/internal/jobs/{job_id}/files', headers=headers, json={'name': 'result.bin', 'kind': kind})
+    response = api[0].post(f'/internal/jobs/{job_id}/files', headers=headers, json={'name': 'result.csv', 'kind': kind})
     assert response.status_code == 200, response.text
     return response.json()['id']
 
@@ -190,8 +190,9 @@ def test_unreserved_and_cross_job_writes_are_rejected(api):
 def save_output(api, job_id, headers):
     file_id = create_file(api, job_id, headers)
     assert api[0].post(f'/internal/jobs/{job_id}/files/{file_id}/reserve', headers=headers, json={'size': 3}).status_code == 200
-    assert api[0].post(f'/internal/jobs/{job_id}/files/{file_id}/write?offset=0', headers={**headers, 'Content-Type': 'application/octet-stream'}, content=b'abc').status_code == 200
+    assert api[0].post(f'/internal/jobs/{job_id}/files/{file_id}/write?offset=0', headers={**headers, 'Content-Type': 'application/octet-stream'}, content=b'a\n1').status_code == 200
     assert api[0].post(f'/internal/jobs/{job_id}/files/{file_id}/complete', headers=headers).status_code == 200
+    assert api[0].post(f'/internal/jobs/{job_id}/files/{file_id}/csv-checked', headers=headers).status_code == 200
     return file_id
 
 
@@ -207,12 +208,12 @@ def test_success_publishes_only_after_stop_and_preserves_on_cancel(api):
     api[2].stop(job_id, True)
     jobs.reconcile()
     jobs.reconcile()
-    assert api[0].get(f'/artifacts/{file_id}').content == b'abc'
+    assert api[0].get(f'/artifacts/{file_id}').content == b'a\n1'
     total = api[0].get('/account/usage').json()['storage']
     assert total['usedBytes'] == 2 + 3 + len(quotas.encoded({'value': 24}))
     assert total['reservedBytes'] == 0
     assert api[0].post(f'/jobs/{job_id}/cancel').json()['state'] == 'succeeded'
-    assert api[0].get(f'/artifacts/{file_id}').content == b'abc'
+    assert api[0].get(f'/artifacts/{file_id}').content == b'a\n1'
     api[1].user = 'bob'
     assert api[0].get(f'/artifacts/{file_id}').status_code == 404
 

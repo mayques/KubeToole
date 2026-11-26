@@ -37,9 +37,12 @@ def account(conn, user):
 
 
 def reserved(conn, user):
-    return conn.execute("""SELECT COALESCE(SUM(a.reserved_bytes),0) AS n FROM artifacts a
+    output = conn.execute("""SELECT COALESCE(SUM(a.reserved_bytes),0) AS n FROM artifacts a
         JOIN jobs j ON a.job_id=j.id WHERE j.user_id=%s AND j.state=ANY(%s) AND a.kind='output'""",
                         (user, list(policy.ACTIVE))).fetchone()["n"]
+    uploads = conn.execute('SELECT COALESCE(SUM(size_bytes),0) AS n FROM uploads WHERE user_id=%s AND state=ANY(%s)',
+                           (user, list(policy.UPLOAD_ACTIVE))).fetchone()['n']
+    return output + uploads
 
 
 def check_allowance(conn, user, additional):
@@ -55,7 +58,9 @@ def check_disk(conn, additional=0):
     output = conn.execute("""SELECT COALESCE(SUM(a.reserved_bytes),0) AS n FROM artifacts a
         JOIN jobs j ON j.id=a.job_id WHERE j.state=ANY(%s) AND a.kind='output'""",
                           (list(policy.ACTIVE),)).fetchone()["n"]
-    if shutil.disk_usage(policy.DATA_ROOT).free - active * policy.SCRATCH_BYTES - output - additional < policy.DATA_FREE_BYTES:
+    uploads = conn.execute('SELECT COALESCE(SUM(size_bytes),0) AS n FROM uploads WHERE state=ANY(%s)',
+                           (list(policy.UPLOAD_ACTIVE),)).fetchone()['n']
+    if shutil.disk_usage(policy.DATA_ROOT).free - active * policy.SCRATCH_BYTES - output - uploads - additional < policy.DATA_FREE_BYTES:
         raise Rejected("Storage is temporarily at capacity", 507)
     if shutil.disk_usage("/").free < policy.SYSTEM_FREE_BYTES:
         raise Rejected("Server storage is temporarily at capacity", 507)

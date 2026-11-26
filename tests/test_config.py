@@ -33,6 +33,7 @@ def test_render_requires_owner_and_immutable_matching_images():
     image = 'ghcr.io/mayques/kubetoole-calculator@sha256:' + 'a' * 64
     patch = yaml.safe_load(render('test-owner', image))
     container = patch['spec']['template']['spec']['containers'][0]
+    assert container['name'] == 'kubetoole-calculator'
     env = {item['name']: item['value'] for item in container['env']}
     assert container['image'] == env['WORKER_IMAGE'] == image
     assert env['OWNER_SUBJECT'] == 'test-owner'

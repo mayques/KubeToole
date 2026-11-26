@@ -72,8 +72,8 @@ def sdk_context(api, monkeypatch):
 
 def test_worker_streams_chunks_and_seals_files(api, monkeypatch):
     job_id, context = sdk_context(api, monkeypatch)
-    data = b'x' * 1_048_577  # Spans two HTTP writes; each reservation must precede its write.
-    with context.output('result.bin') as output:
+    data = b'col\n' + b'x\n' * 524287  # Spans two writes and validates without a giant field.
+    with context.output('result.csv') as output:
         assert output.write(data) == len(data)
     assert output.tell() == len(data)
     with output.open_reader() as saved:

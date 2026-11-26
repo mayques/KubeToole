@@ -12,8 +12,10 @@ from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel, ConfigDict, Field
 
 import jobs
+import downloads
 import policy
 import storage
+import uploads
 from auth import verify_user
 from database import connection, migrate
 from errors import Rejected
@@ -40,6 +42,7 @@ async def lifespan(app):
         while not stop.is_set():
             try:
                 jobs.reconcile()
+                uploads.cleanup()
             except Exception:
                 logging.exception("Job monitor unavailable; reservations remain held")
             stop.wait(3)
@@ -70,10 +73,11 @@ class BodyLimit:
             message = await receive()
             if message["type"] == "http.disconnect":
                 return
-            body.extend(message.get("body", b""))
-            chunk_write = re.fullmatch(r"/internal/jobs/[a-fA-F0-9-]+/files/[a-fA-F0-9-]+/write", scope["path"])
-            if len(body) > (1_048_576 if chunk_write else policy.MAX_INPUT_BYTES):
+            chunk_write = re.fullmatch(r"/(?:internal/jobs/[a-fA-F0-9-]+/files|uploads)/[a-fA-F0-9-]+/write", scope["path"])
+            chunk = message.get('body', b'')
+            if len(body) + len(chunk) > (policy.UPLOAD_CHUNK_BYTES if chunk_write else policy.MAX_INPUT_BYTES):
                 return await JSONResponse({"detail": "Request too large"}, status_code=413)(scope, receive, send)
+            body.extend(chunk)
             if not message.get("more_body", False):
                 break
         delivered = False
@@ -148,12 +152,14 @@ def account_usage(user: str = Depends(verify_user)):
 def tools(user: str = Depends(verify_user)):
     with transaction() as conn:
         account(conn, user)
-    return {"tools": list(REGISTRY.values())}
+    return {"tools": [spec for spec in REGISTRY.values() if not spec.get('internal')]}
 
 
 @app.post("/tools/{tool_id}/run")
 def run_tool(tool_id: str, data: Input, user: str = Depends(verify_user)):
     spec = get(tool_id, data.inputs)
+    if spec.get('internal'):
+        raise Rejected('Tool not found', 404)
     if spec["execution"] == "inline":
         return {"kind": "inline", "result": inline(user, tool_id, data.inputs)}
     return JSONResponse(content=jsonable_encoder(
@@ -194,7 +200,81 @@ def download(conn, artifact_id, user):
 @app.get("/artifacts/{artifact_id}")
 def artifact_download(artifact_id: UUID, user: str = Depends(verify_user)):
     with transaction() as conn:
-        return download(conn, artifact_id, user)
+        return downloads.response(*downloads.resolve(conn, 'artifact', artifact_id, user))
+
+
+class Upload(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    name: str = Field(min_length=5, max_length=160)
+    size: int = Field(ge=1, le=policy.MAX_UPLOAD_BYTES, strict=True)
+
+
+@app.post('/uploads', status_code=201)
+def create_upload(data: Upload, user: str = Depends(verify_user)):
+    return uploads.create(user, data.name, data.size)
+
+
+@app.get('/uploads')
+def list_uploads(user: str = Depends(verify_user)):
+    with transaction() as conn:
+        account(conn, user)
+        rows = conn.execute(f'SELECT {uploads.PUBLIC} FROM uploads WHERE user_id=%s ORDER BY created_at DESC', (user,)).fetchall()
+        return {'uploads': rows, 'maxBytes': policy.MAX_UPLOAD_BYTES, 'chunkBytes': policy.UPLOAD_CHUNK_BYTES}
+
+
+@app.get('/uploads/{file_id}/download')
+def download_upload(file_id: UUID, user: str = Depends(verify_user)):
+    with transaction() as conn:
+        return downloads.response(*downloads.resolve(conn, 'upload', file_id, user))
+
+
+@app.post('/uploads/{file_id}/write')
+def upload_chunk(file_id: UUID, offset: int = Query(ge=0), data: bytes = Body(media_type='application/octet-stream'),
+                 user: str = Depends(verify_user)):
+    with transaction() as conn:
+        uploads.write(conn, file_id, user, offset, data)
+    return {'written': len(data)}
+
+
+@app.post('/uploads/{file_id}/complete')
+def seal_upload(file_id: UUID, user: str = Depends(verify_user)):
+    with transaction() as conn:
+        return uploads.complete(conn, file_id, user)
+
+
+@app.post('/uploads/{file_id}/validate', status_code=202)
+def validate_upload(file_id: UUID, user: str = Depends(verify_user)):
+    # Check ownership before admission, and bind again atomically with job creation.
+    with transaction() as conn:
+        uploads.owned(conn, file_id, user)
+    return jobs.launch(user, 'csv_validation', {'upload_id': str(file_id)}, internal=True)
+
+
+@app.post('/uploads/{file_id}/remove')
+def remove_upload(file_id: UUID, user: str = Depends(verify_user)):
+    with transaction() as conn:
+        uploads.remove(conn, file_id, user)
+    return {'removed': True}
+
+
+class Download(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    kind: Literal['upload', 'artifact']
+    id: UUID
+
+
+@app.post('/downloads')
+def request_download(data: Download, user: str = Depends(verify_user)):
+    with transaction() as conn:
+        return downloads.issue(conn, data.kind, data.id, user)
+
+
+@app.post('/downloads/consume')
+def consume_download(data: bytes = Body(media_type='application/x-www-form-urlencoded')):
+    # A single-use capability issued only after JWT/ownership checks; sent in a POST
+    # body, never a query string, so the browser can stream to its download manager.
+    with transaction() as conn:
+        return downloads.consume(conn, data)
 
 
 def worker(conn, job_id, credential, claimed=True):
@@ -215,12 +295,13 @@ def claim_job(job_id: UUID, authorization: str = Header(default="")):
 class Finished(BaseModel):
     outcome: Literal["succeeded", "failed"]
     result: Any = None
+    error: str | None = Field(default=None, max_length=300)
 
 
 @app.post("/internal/jobs/{job_id}/finish")
 def finish_job(job_id: UUID, data: Finished, authorization: str = Header(default="")):
     with transaction() as conn:
-        jobs.finish(conn, worker(conn, job_id, authorization), data.outcome, data.result)
+        jobs.finish(conn, worker(conn, job_id, authorization), data.outcome, data.result, data.error)
     return {"recorded": True}
 
 
@@ -252,6 +333,18 @@ def complete(job_id: UUID, file_id: UUID, authorization: str = Header(default=""
     with transaction() as conn:
         storage.complete(conn, worker(conn, job_id, authorization), file_id)
     return {"complete": True}
+
+
+@app.post('/internal/jobs/{job_id}/files/{file_id}/csv-checked')
+def csv_checked(job_id: UUID, file_id: UUID, authorization: str = Header(default='')):
+    with transaction() as conn:
+        worker(conn, job_id, authorization)
+        row = conn.execute("SELECT * FROM artifacts WHERE id=%s AND job_id=%s AND complete AND kind='output'",
+                           (file_id, job_id)).fetchone()
+        if not row or not row['name'].lower().endswith('.csv'):
+            raise Rejected('CSV output not found', 404)
+        conn.execute('UPDATE artifacts SET csv_checked=TRUE WHERE id=%s', (file_id,))
+    return {'checked': True}
 
 
 @app.post("/internal/jobs/{job_id}/files/{file_id}/write")
@@ -288,4 +381,8 @@ def discard_temporary(job_id: UUID, file_id: UUID, authorization: str = Header(d
 def read_input(job_id: UUID, file_id: UUID, authorization: str = Header(default="")):
     with transaction() as conn:
         row = worker(conn, job_id, authorization)
+        if conn.execute('SELECT 1 FROM uploads WHERE id=%s', (file_id,)).fetchone():
+            validation_job = row['id'] if row['tool_id'] == 'csv_validation' else None
+            upload, path = uploads.readable(conn, file_id, row['user_id'], validation_job)
+            return FileResponse(path, media_type='application/octet-stream')
         return download(conn, file_id, row["user_id"])

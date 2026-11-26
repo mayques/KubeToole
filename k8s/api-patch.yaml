@@ -15,7 +15,7 @@ spec:
         runAsGroup: 10001
         seccompProfile: {type: RuntimeDefault}
       containers:
-        - name: calculator
+        - name: kubetoole-calculator
           image: REPLACE_IMAGE_DIGEST
           imagePullPolicy: IfNotPresent
           envFrom:

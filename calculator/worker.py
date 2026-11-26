@@ -7,6 +7,7 @@ import sys
 import urllib.request
 
 import policy
+from csv_format import InvalidCSV, validate
 from tools import execute
 
 
@@ -43,6 +44,7 @@ class Writer:
         self.id = context.request('/files', {"name": name, "kind": kind})['id']
         self.size = 0
         self.closed = False
+        self.csv_output = kind == 'output' and name.lower().endswith('.csv')
 
     def write(self, data):
         if self.closed:
@@ -68,6 +70,10 @@ class Writer:
         self.closed = True
         if error_type is None:
             self.context.request(f"/files/{self.id}/complete")
+            if self.csv_output:
+                with self.open_reader() as stream:
+                    validate(stream)
+                self.context.request(f'/files/{self.id}/csv-checked')
 
     def open_reader(self):
         if not self.closed:
@@ -89,9 +95,9 @@ def execute_child():
     try:
         result = execute(os.environ['TOOL_ID'], inputs, context)
         context.request('/finish', {"outcome": "succeeded", "result": result})
-    except Exception:
+    except Exception as error:
         try:
-            context.request('/finish', {"outcome": "failed"})
+            context.request('/finish', {"outcome": "failed", 'error': str(error) if isinstance(error, InvalidCSV) else None})
         except Exception:
             pass
         return 1
